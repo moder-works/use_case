@@ -128,10 +128,10 @@ class UseCaseExecutor {
   /// Starts one queued [entry] and returns a future that completes when it
   /// has finished and its observers have been told.
   Future<void> _run(_UseCaseWrapper entry) {
-    var useCase = entry.useCase;
-    var args = entry.args;
-    var observers = entry.observers;
-    var type = entry.type;
+    final useCase = entry.useCase;
+    final args = entry.args;
+    final observers = entry.observers;
+    final type = entry.type;
 
     if (_subscriptions.containsKey(type)) {
       observers.addAll(_subscriptions[type]!.map((e) => e.observer));
@@ -143,7 +143,7 @@ class UseCaseExecutor {
     final run = Future.sync(() async {
       logV('${useCase.runtimeType} Starting Execution');
       try {
-        var r = await useCase.execute(args);
+        final r = await useCase.execute(args);
         await useCase.dispose();
         logV('${useCase.runtimeType} Disposed');
         return r;
@@ -188,16 +188,12 @@ class UseCaseExecutor {
   }
 
   void cleanQueue() {
-    _queue.removeWhere((uc) {
-      bool remove = [UseCaseState.done, UseCaseState.error].contains(
-        uc.status.state,
-      );
-
-      if (remove) {
-        logV('Removed ${uc.runtimeType} from the queue');
+    _queue.removeWhere((entry) {
+      if (entry.isFinished) {
+        logV('Removed ${entry.useCase.runtimeType} from the queue');
       }
 
-      return remove;
+      return entry.isFinished;
     });
   }
 
@@ -236,7 +232,7 @@ class UseCaseExecutor {
 
   void add<T extends UseCase>(T uc, UseCaseObserver? observer, [dynamic args]) {
     // Check UseCase exists with matching args.
-    var idx = _queue.indexWhere((q) => q.isType<T>(args));
+    final idx = _queue.indexWhere((q) => q.isType<T>(args));
 
     // If not exists, add to queue.
     if (idx == -1 || uc.allowConcurrency) {
@@ -244,11 +240,10 @@ class UseCaseExecutor {
       _queue.add(_UseCaseWrapper<T>(uc, args, observer));
     } else if (observer != null) {
       // Otherwise grab the existing UseCase
-      var existing = _queue[idx];
+      final existing = _queue[idx];
 
       // If the existing UseCase is done executing, just relay the status.
-      if ([UseCaseState.done, UseCaseState.error]
-          .contains(existing.status.state)) {
+      if (existing.isFinished) {
         logV('${uc.runtimeType} used result of already completed UseCase');
         observer.onUseCaseUpdate(existing.status);
         return;
@@ -270,21 +265,24 @@ class UseCaseExecutor {
 }
 
 class _UseCaseWrapper<T extends UseCase> {
-  final T useCase;
-  final dynamic args;
-  late final Type type;
-  late UseCaseStatus status;
-
-  final List<UseCaseObserver> observers = [];
-
-  _UseCaseWrapper(this.useCase, this.args, UseCaseObserver? observer) {
-    type = T;
-    status = UseCaseStatus(T, state: UseCaseState.queued);
+  _UseCaseWrapper(this.useCase, this.args, UseCaseObserver? observer)
+      : type = T,
+        status = UseCaseStatus(T, state: UseCaseState.queued) {
     if (observer != null) {
       observers.add(observer);
       observer.onUseCaseUpdate(status);
     }
   }
+
+  final T useCase;
+  final dynamic args;
+  final Type type;
+  UseCaseStatus status;
+
+  final List<UseCaseObserver> observers = [];
+
+  bool get isFinished =>
+      status.state == UseCaseState.done || status.state == UseCaseState.error;
 
   bool isType<X>(dynamic args) => X == T && args == this.args;
 }
