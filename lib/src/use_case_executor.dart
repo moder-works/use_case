@@ -101,17 +101,6 @@ class UseCaseExecutor {
           continue;
         }
 
-        if (queue.isEmpty) {
-          entry.status = entry.status.copyWith(state: UseCaseState.error);
-          _notifyObservers(entry.status, entry.observers);
-          for (final completer in completion) {
-            completer.completeError(
-              'Queue was empty, requests likely cancelled',
-            );
-          }
-          return null;
-        }
-
         Completer<void> completer = Completer();
 
         completion.add(completer);
