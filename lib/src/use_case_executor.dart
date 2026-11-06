@@ -47,7 +47,7 @@ class UseCaseExecutor {
       print('UseCaseExecutor: $message');
     }
   }
-  
+
   void logV(String message) => log(message, UCLogLevel.verbose);
   void logD(String message) => log(message, UCLogLevel.debug);
   void logI(String message) => log(message, UCLogLevel.info);
@@ -271,7 +271,8 @@ class UseCaseExecutor {
         return;
       }
 
-      logV('${uc.runtimeType} added as an observer to an already existing UseCase');
+      logV(
+          '${uc.runtimeType} added as an observer to an already existing UseCase');
 
       // Otherwise, attach this observer to the existing UseCase
       existing.observers.add(observer);
