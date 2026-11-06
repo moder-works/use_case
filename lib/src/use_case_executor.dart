@@ -4,6 +4,13 @@ import 'package:use_case/use_case.dart';
 
 typedef UCLogger = void Function(String message, UCLogLevel logLevel);
 
+/// Runs use cases and reports their [UseCaseStatus] to observers.
+///
+/// There is one executor per process: every [UseCaseManager] shares it.
+/// Use cases added while others run are queued and start together once the
+/// running batch has finished. A use case added with equal arguments while
+/// an earlier one is queued or running shares that run unless it sets
+/// [UseCase.allowConcurrency]; see [add] for how the two are matched.
 class UseCaseExecutor {
   final List<_UseCaseWrapper> _queue = [];
   final Map<Type, List<UseCaseSubscription>> _subscriptions = {};
@@ -12,8 +19,10 @@ class UseCaseExecutor {
   final bool debug;
   final UCLogger? logger;
 
+  /// The process-wide executor, created by the first constructor call.
   static UseCaseExecutor? instance;
 
+  /// Whether any use case is queued or running.
   final DartValueNotifier<bool> isExecuting = DartValueNotifier(false);
 
   UseCaseExecutor._(
@@ -23,6 +32,8 @@ class UseCaseExecutor {
     this.logger,
   );
 
+  /// Returns the process-wide executor. [debug] and [logger] take effect only
+  /// on the first call, which creates it.
   factory UseCaseExecutor({
     bool debug = false,
     UCLogger? logger,
@@ -39,6 +50,8 @@ class UseCaseExecutor {
     );
   }
 
+  /// Sends [message] to [logger], or prints it when there is no logger and
+  /// [debug] is set.
   void log(String message, UCLogLevel logLevel) {
     if (logger != null) {
       logger!(message, logLevel);
@@ -62,6 +75,8 @@ class UseCaseExecutor {
     });
   }
 
+  /// Reports every queued or running use case as an error to its observers,
+  /// then clears the queue and every subscription.
   Future<void> flush() async {
     List<_UseCaseWrapper> queueCopy = List.from(_queue);
     _queue.clear();
@@ -187,6 +202,7 @@ class UseCaseExecutor {
     return run;
   }
 
+  /// Removes the use cases that have finished from the queue.
   void cleanQueue() {
     _queue.removeWhere((entry) {
       if (entry.isFinished) {
@@ -197,6 +213,8 @@ class UseCaseExecutor {
     });
   }
 
+  /// Reports every later run of [T] to [observer] until the subscription is
+  /// disposed.
   UseCaseSubscription subscribe<T extends UseCase>(UseCaseObserver observer) {
     var sub = UseCaseSubscription<T>(observer, this);
 
@@ -205,10 +223,12 @@ class UseCaseExecutor {
     return sub;
   }
 
+  /// Stops reporting to [sub]'s observer.
   void unsubscribe(UseCaseSubscription sub) {
     _subscriptions[sub.type]?.remove(sub);
   }
 
+  /// Whether [sub] is still subscribed.
   bool hasSubscription(UseCaseSubscription sub) {
     return _subscriptions.containsKey(sub.type) &&
         _subscriptions[sub.type]!.contains(sub);
@@ -230,6 +250,12 @@ class UseCaseExecutor {
     );
   }
 
+  /// Queues [uc] with [args] and reports its status to [observer].
+  ///
+  /// When a use case added under the same [T] with equal [args] is already
+  /// queued or running, [observer] is attached to that run instead. [T] is the
+  /// static type argument, not the runtime type: `UseCaseManager.invoke` adds
+  /// every use case as a plain [UseCase].
   void add<T extends UseCase>(T uc, UseCaseObserver? observer, [dynamic args]) {
     // Check UseCase exists with matching args.
     final idx = _queue.indexWhere((q) => q.isType<T>(args));
