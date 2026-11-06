@@ -92,9 +92,9 @@ The above examples show calling a UseCase directly. This is not recommended beca
 
 The recommended approach is to use the UseCaseManger, which manages UseCases using a String ID. NOTE: The UseCase IDs must be unique.
 
-When using the UseCaseManager, executions are queued and ran asynchronously. 
+When using the UseCaseManager, each execution starts asynchronously as soon as it is added, and runs beside whatever else is in flight. It never waits for an unrelated UseCase to finish.
 
-If a UseCase is added to the queue twice (with matching arguments) during a single queue traversal, the result will be shared between the observers. 
+If the same UseCase type is added twice with matching arguments while the first run is still in flight, the result will be shared between the observers. UseCases of different types never share a run, whatever their arguments. Override `allowConcurrency` to always start a new run.
 
 E.g. 
 - Class A tells UseCaseManager to execute FetchRecord UseCase, passing in Limit 5.

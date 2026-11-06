@@ -85,3 +85,11 @@
 # 1.1.12
 
 * Fixed issues, added more error logs 
+
+# 1.4.0
+
+* Each use case starts as soon as it is added. It no longer waits for every use case already running to finish, so a slow use case no longer delays unrelated ones. The 60-second timeout on a batch is gone with the batches.
+* Two use cases share a run only when they are the same type with equal arguments. Before, a use case added through `invoke` was matched on its arguments alone, so a second use case of a different type with equal (or no) arguments was silently dropped.
+* A failing use case reports `error` and nothing after it. Before, observers then received `done` with null data, and `callFuture` could fail to reject.
+* `subscribe<T>()` now sees use cases added through `invoke`.
+* A finished run is never reused: the next call runs the use case again.
