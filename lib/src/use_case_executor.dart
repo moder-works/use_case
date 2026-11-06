@@ -117,7 +117,7 @@ class UseCaseExecutor {
       cleanQueue();
       return _runQueue();
     }).onError((error, stackTrace) {
-      logE('Error -> ${error?.toString()}');
+      logE('Queue Failed: $error');
 
       cleanQueue();
 
@@ -141,26 +141,22 @@ class UseCaseExecutor {
     _notifyObservers(entry.status, observers);
 
     final run = Future.sync(() async {
-      logV('${useCase.runtimeType} Starting Execution ');
+      logV('${useCase.runtimeType} Starting Execution');
       try {
         var r = await useCase.execute(args);
         await useCase.dispose();
-        logV('UseCaseExecutor: DISPOSED ${useCase.runtimeType}');
+        logV('${useCase.runtimeType} Disposed');
         return r;
-      } catch (e) {
-        logE('Error (1) in ${useCase.runtimeType}');
+      } catch (_) {
         try {
           await useCase.dispose();
         } catch (e) {
-          logE('Error (2) in ${useCase.runtimeType} : ${e.toString()}');
+          logE('${useCase.runtimeType} Dispose Failed: $e');
         }
-
-        logE('Error (3) in ${useCase.runtimeType}');
 
         rethrow;
       }
     }).onError((error, stackTrace) {
-      logE('Error (4) in ${useCase.runtimeType} : ${error.toString()}');
       entry.status = entry.status.copyWith(
         state: UseCaseState.error,
         error: error,
