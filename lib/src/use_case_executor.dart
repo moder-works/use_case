@@ -101,67 +101,7 @@ class UseCaseExecutor {
           continue;
         }
 
-        var useCase = entry.useCase;
-        var args = entry.args;
-        var observers = entry.observers;
-        var type = entry.type;
-
-        if (_subscriptions.containsKey(type)) {
-          observers.addAll(_subscriptions[type]!.map((e) => e.observer));
-        }
-
-        entry.status = entry.status.copyWith(state: UseCaseState.started);
-        _notifyObservers(entry.status, observers);
-
-        final run = Future.sync(() async {
-          logV('${useCase.runtimeType} Starting Execution ');
-          try {
-            var r = await useCase.execute(args);
-            await useCase.dispose();
-            logV('UseCaseExecutor: DISPOSED ${useCase.runtimeType}');
-            return r;
-          } catch (e) {
-            logE('Error (1) in ${useCase.runtimeType}');
-            try {
-              await useCase.dispose();
-            } catch (e) {
-              logE('Error (2) in ${useCase.runtimeType} : ${e.toString()}');
-            }
-
-            logE('Error (3) in ${useCase.runtimeType}');
-
-            rethrow;
-          }
-        }).onError((error, stackTrace) {
-          logE('Error (4) in ${useCase.runtimeType} : ${error.toString()}');
-          entry.status = entry.status.copyWith(
-            state: UseCaseState.error,
-            error: error,
-            stackTrace: stackTrace,
-          );
-
-          logE('${useCase.runtimeType} Completed With Error: $error');
-
-          _notifyObservers(entry.status, observers);
-
-          logV('${useCase.runtimeType} Finished Execution');
-        }).then((val) {
-          entry.status = entry.status.copyWith(
-            state: UseCaseState.done,
-            data: val,
-          );
-
-          logV('${useCase.runtimeType} Completed Normally');
-
-          _notifyObservers(entry.status, observers);
-
-          logV('${useCase.runtimeType} Finished Execution');
-        });
-
-        runs.add(run);
-
-        entry.status = entry.status.copyWith(state: UseCaseState.waiting);
-        _notifyObservers(entry.status, observers);
+        runs.add(_run(entry));
       }
 
       return Future.wait(runs);
@@ -183,6 +123,72 @@ class UseCaseExecutor {
 
       isExecuting.value = false;
     });
+  }
+
+  /// Starts one queued [entry] and returns a future that completes when it
+  /// has finished and its observers have been told.
+  Future<void> _run(_UseCaseWrapper entry) {
+    var useCase = entry.useCase;
+    var args = entry.args;
+    var observers = entry.observers;
+    var type = entry.type;
+
+    if (_subscriptions.containsKey(type)) {
+      observers.addAll(_subscriptions[type]!.map((e) => e.observer));
+    }
+
+    entry.status = entry.status.copyWith(state: UseCaseState.started);
+    _notifyObservers(entry.status, observers);
+
+    final run = Future.sync(() async {
+      logV('${useCase.runtimeType} Starting Execution ');
+      try {
+        var r = await useCase.execute(args);
+        await useCase.dispose();
+        logV('UseCaseExecutor: DISPOSED ${useCase.runtimeType}');
+        return r;
+      } catch (e) {
+        logE('Error (1) in ${useCase.runtimeType}');
+        try {
+          await useCase.dispose();
+        } catch (e) {
+          logE('Error (2) in ${useCase.runtimeType} : ${e.toString()}');
+        }
+
+        logE('Error (3) in ${useCase.runtimeType}');
+
+        rethrow;
+      }
+    }).onError((error, stackTrace) {
+      logE('Error (4) in ${useCase.runtimeType} : ${error.toString()}');
+      entry.status = entry.status.copyWith(
+        state: UseCaseState.error,
+        error: error,
+        stackTrace: stackTrace,
+      );
+
+      logE('${useCase.runtimeType} Completed With Error: $error');
+
+      _notifyObservers(entry.status, observers);
+
+      logV('${useCase.runtimeType} Finished Execution');
+    }).then((val) {
+      entry.status = entry.status.copyWith(
+        state: UseCaseState.done,
+        data: val,
+      );
+
+      logV('${useCase.runtimeType} Completed Normally');
+
+      _notifyObservers(entry.status, observers);
+
+      logV('${useCase.runtimeType} Finished Execution');
+    });
+
+    entry.status = entry.status.copyWith(state: UseCaseState.waiting);
+    _notifyObservers(entry.status, observers);
+
+    return run;
   }
 
   void cleanQueue() {
