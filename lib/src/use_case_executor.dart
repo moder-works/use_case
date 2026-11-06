@@ -94,16 +94,12 @@ class UseCaseExecutor {
     return _executionLock.synchronized(() async {
       logV('Queue Length: ${queue.length}');
 
-      List<Completer<void>> completion = [];
+      final runs = <Future<void>>[];
 
       for (var entry in queue) {
         if (entry.status.state != UseCaseState.queued) {
           continue;
         }
-
-        Completer<void> completer = Completer();
-
-        completion.add(completer);
 
         var useCase = entry.useCase;
         var args = entry.args;
@@ -117,7 +113,7 @@ class UseCaseExecutor {
         entry.status = entry.status.copyWith(state: UseCaseState.started);
         _notifyObservers(entry.status, observers);
 
-        Future.sync(() async {
+        final run = Future.sync(() async {
           logV('${useCase.runtimeType} Starting Execution ');
           try {
             var r = await useCase.execute(args);
@@ -148,9 +144,6 @@ class UseCaseExecutor {
 
           _notifyObservers(entry.status, observers);
 
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
           logV('${useCase.runtimeType} Finished Execution');
         }).then((val) {
           entry.status = entry.status.copyWith(
@@ -162,17 +155,16 @@ class UseCaseExecutor {
 
           _notifyObservers(entry.status, observers);
 
-          if (!completer.isCompleted) {
-            completer.complete();
-          }
           logV('${useCase.runtimeType} Finished Execution');
         });
+
+        runs.add(run);
 
         entry.status = entry.status.copyWith(state: UseCaseState.waiting);
         _notifyObservers(entry.status, observers);
       }
 
-      return Future.wait(completion.map((e) => e.future));
+      return Future.wait(runs);
     }).timeout(
       const Duration(seconds: 60),
       onTimeout: () {
