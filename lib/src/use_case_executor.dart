@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:collection/collection.dart';
 import 'package:synchronized/synchronized.dart';
 import 'package:use_case/use_case.dart';
 
@@ -7,14 +8,13 @@ typedef UCLogger = void Function(String message, UCLogLevel logLevel);
 /// Runs use cases and reports their [UseCaseStatus] to observers.
 ///
 /// There is one executor per process: every [UseCaseManager] shares it.
-/// Use cases added while others run are queued and start together once the
-/// running batch has finished. A use case added with equal arguments while
-/// an earlier one is queued or running shares that run unless it sets
-/// [UseCase.allowConcurrency]; see [add] for how the two are matched.
+/// Each use case starts as soon as it is added and runs beside whatever else
+/// is in flight. A use case of the same type with equal arguments as one that
+/// is still running shares that run unless it sets
+/// [UseCase.allowConcurrency]; see [add].
 class UseCaseExecutor {
   final List<_UseCaseWrapper> _queue = [];
   final Map<Type, List<UseCaseSubscription>> _subscriptions = {};
-  final Lock _executionLock;
   final Lock _notificationLock;
   final bool debug;
   final UCLogger? logger;
@@ -27,7 +27,6 @@ class UseCaseExecutor {
 
   UseCaseExecutor._(
     this._notificationLock,
-    this._executionLock,
     this.debug,
     this.logger,
   );
@@ -39,9 +38,6 @@ class UseCaseExecutor {
     UCLogger? logger,
   }) {
     return instance ??= UseCaseExecutor._(
-      Lock(
-        reentrant: true,
-      ),
       Lock(
         reentrant: true,
       ),
@@ -89,124 +85,88 @@ class UseCaseExecutor {
     _subscriptions.clear();
   }
 
-  List<_UseCaseWrapper> _getQueue() {
-    return _queue.where((e) {
-      return e.status.state == UseCaseState.queued;
-    }).toList();
-  }
-
-  Future<void> _runQueue() async {
-    final queue = _getQueue();
-
-    if (queue.isEmpty) {
-      isExecuting.value = false;
-
+  /// Starts one queued [entry] on its own and tells its observers.
+  ///
+  /// It never waits for an unrelated use case to finish. When it finishes it
+  /// leaves the queue, so a later call runs the use case again.
+  void _run(_UseCaseWrapper entry) {
+    // Flushed before it started.
+    if (!_queue.contains(entry)) {
       return;
     }
 
-    isExecuting.value = true;
-
-    return _executionLock.synchronized(() async {
-      logV('Queue Length: ${queue.length}');
-
-      final runs = <Future<void>>[];
-
-      for (var entry in queue) {
-        if (entry.status.state != UseCaseState.queued) {
-          continue;
-        }
-
-        runs.add(_run(entry));
-      }
-
-      return Future.wait(runs);
-    }).timeout(
-      const Duration(seconds: 60),
-      onTimeout: () {
-        logE('Timeout while executing UseCases');
-        cleanQueue();
-        isExecuting.value = false;
-        return Future.error('UseCaseExecutor: Timeout');
-      },
-    ).then((v) async {
-      cleanQueue();
-      return _runQueue();
-    }).onError((error, stackTrace) {
-      logE('Queue Failed: $error');
-
-      cleanQueue();
-
-      isExecuting.value = false;
-    });
-  }
-
-  /// Starts one queued [entry] and returns a future that completes when it
-  /// has finished and its observers have been told.
-  Future<void> _run(_UseCaseWrapper entry) {
     final useCase = entry.useCase;
     final args = entry.args;
     final observers = entry.observers;
-    final type = entry.type;
+    final subscribers = _subscriptions[entry.type];
 
-    if (_subscriptions.containsKey(type)) {
-      observers.addAll(_subscriptions[type]!.map((e) => e.observer));
+    if (subscribers != null) {
+      observers.addAll(subscribers.map((e) => e.observer));
     }
 
     entry.status = entry.status.copyWith(state: UseCaseState.started);
     _notifyObservers(entry.status, observers);
 
-    final run = Future.sync(() async {
-      logV('${useCase.runtimeType} Starting Execution');
+    Future.sync(() async {
+      logV('${entry.type} Starting Execution');
       try {
         final r = await useCase.execute(args);
         await useCase.dispose();
-        logV('${useCase.runtimeType} Disposed');
+        logV('${entry.type} Disposed');
         return r;
       } catch (_) {
         try {
           await useCase.dispose();
         } catch (e) {
-          logE('${useCase.runtimeType} Dispose Failed: $e');
+          logE('${entry.type} Dispose Failed: $e');
         }
 
         rethrow;
       }
-    }).onError((error, stackTrace) {
-      entry.status = entry.status.copyWith(
-        state: UseCaseState.error,
-        error: error,
-        stackTrace: stackTrace,
-      );
+    }).then(
+      (val) {
+        entry.status = entry.status.copyWith(
+          state: UseCaseState.done,
+          data: val,
+        );
 
-      logE('${useCase.runtimeType} Completed With Error: $error');
+        logV('${entry.type} Completed Normally');
 
-      _notifyObservers(entry.status, observers);
+        _notifyObservers(entry.status, observers);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        entry.status = entry.status.copyWith(
+          state: UseCaseState.error,
+          error: error,
+          stackTrace: stackTrace,
+        );
 
-      logV('${useCase.runtimeType} Finished Execution');
-    }).then((val) {
-      entry.status = entry.status.copyWith(
-        state: UseCaseState.done,
-        data: val,
-      );
+        logE('${entry.type} Completed With Error: $error');
 
-      logV('${useCase.runtimeType} Completed Normally');
-
-      _notifyObservers(entry.status, observers);
-
-      logV('${useCase.runtimeType} Finished Execution');
+        _notifyObservers(entry.status, observers);
+      },
+    ).whenComplete(() {
+      logV('${entry.type} Finished Execution');
+      if (_queue.remove(entry)) {
+        logV('Removed ${entry.type} from the queue');
+      }
+      if (_queue.isEmpty) {
+        isExecuting.value = false;
+      }
     });
 
     entry.status = entry.status.copyWith(state: UseCaseState.waiting);
     _notifyObservers(entry.status, observers);
-
-    return run;
   }
 
   /// Removes the use cases that have finished from the queue.
+  ///
+  /// A finished use case already leaves the queue on its own; this remains
+  /// for callers that used it before.
   void cleanQueue() {
     _queue.removeWhere((entry) {
       if (entry.isFinished) {
-        logV('Removed ${entry.useCase.runtimeType} from the queue');
+        logV('Removed ${entry.type} from the queue');
       }
 
       return entry.isFinished;
@@ -250,58 +210,56 @@ class UseCaseExecutor {
     );
   }
 
-  /// Queues [uc] with [args] and reports its status to [observer].
+  /// Starts [uc] with [args] and reports its status to [observer].
   ///
-  /// When a use case added under the same [T] with equal [args] is already
-  /// queued or running, [observer] is attached to that run instead. [T] is the
-  /// static type argument, not the runtime type: `UseCaseManager.invoke` adds
-  /// every use case as a plain [UseCase].
+  /// When a use case of the same runtime type with equal [args] is still
+  /// queued or running, [observer] is attached to that run instead, unless
+  /// [uc] sets [UseCase.allowConcurrency]. Use cases of different types never
+  /// share a run, whatever their arguments.
   void add<T extends UseCase>(T uc, UseCaseObserver? observer, [dynamic args]) {
-    // Check UseCase exists with matching args.
-    final idx = _queue.indexWhere((q) => q.isType<T>(args));
+    final existing = uc.allowConcurrency
+        ? null
+        : _queue.firstWhereOrNull((q) => q.matches(uc, args));
 
-    // If not exists, add to queue.
-    if (idx == -1 || uc.allowConcurrency) {
-      logV('${uc.runtimeType} added to the queue');
-      _queue.add(_UseCaseWrapper<T>(uc, args, observer));
-    } else if (observer != null) {
-      // Otherwise grab the existing UseCase
-      final existing = _queue[idx];
-
-      // If the existing UseCase is done executing, just relay the status.
-      if (existing.isFinished) {
-        logV('${uc.runtimeType} used result of already completed UseCase');
-        observer.onUseCaseUpdate(existing.status);
-        return;
-      }
-
-      logV(
-          '${uc.runtimeType} added as an observer to an already existing UseCase');
-
-      // Otherwise, attach this observer to the existing UseCase
-      existing.observers.add(observer);
-
-      // observer.onUseCaseUpdate( existing.status );
+    if (existing == null) {
+      final entry = _UseCaseWrapper(uc, args, observer);
+      _queue.add(entry);
+      isExecuting.value = true;
+      logV('${entry.type} added to the queue');
+      scheduleMicrotask(() => _run(entry));
+      return;
     }
 
-    if (!_executionLock.locked) {
-      _runQueue();
+    if (observer != null) {
+      logV(
+        '${uc.runtimeType} added as an observer to an already existing UseCase',
+      );
+      existing.observers.add(observer);
+    } else {
+      logV(
+          '${uc.runtimeType} shares the run already in flight with equal args');
     }
   }
 }
 
-class _UseCaseWrapper<T extends UseCase> {
+class _UseCaseWrapper {
   _UseCaseWrapper(this.useCase, this.args, UseCaseObserver? observer)
-      : type = T,
-        status = UseCaseStatus(T, state: UseCaseState.queued) {
+      : type = useCase.runtimeType,
+        status = UseCaseStatus(
+          useCase.runtimeType,
+          state: UseCaseState.queued,
+        ) {
     if (observer != null) {
       observers.add(observer);
       observer.onUseCaseUpdate(status);
     }
   }
 
-  final T useCase;
+  final UseCase useCase;
   final dynamic args;
+
+  /// The use case's runtime type, never the static type it was added under:
+  /// `invoke` adds every use case as a plain [UseCase].
   final Type type;
   UseCaseStatus status;
 
@@ -310,5 +268,6 @@ class _UseCaseWrapper<T extends UseCase> {
   bool get isFinished =>
       status.state == UseCaseState.done || status.state == UseCaseState.error;
 
-  bool isType<X>(dynamic args) => X == T && args == this.args;
+  bool matches(UseCase other, dynamic otherArgs) =>
+      type == other.runtimeType && args == otherArgs;
 }
